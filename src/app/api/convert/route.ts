@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak } from "docx";
-import { extractText } from "unpdf";
+import {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  HeadingLevel,
+  PageBreak,
+  Table,
+  TableRow,
+  TableCell,
+  WidthType,
+  AlignmentType,
+  BorderStyle,
+} from "docx";
+import { extractText, extractTextItems } from "unpdf";
 import mammoth from "mammoth";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -213,129 +226,306 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 3. Built-in Conversion Engine: PDF to Word (PDF -> DOCX)
-    let pageTexts: string[] = [];
-    let totalPages = 1;
-
-    try {
-      const uint8 = new Uint8Array(await file.arrayBuffer());
-      const extracted = await extractText(uint8, { mergePages: false });
-      totalPages = extracted.totalPages || 1;
-      const rawText = extracted.text as unknown;
-      if (Array.isArray(rawText)) {
-        pageTexts = rawText.map((t) => String(t || ""));
-      } else if (typeof rawText === "string" && rawText.trim()) {
-        pageTexts = [rawText];
-      }
-    } catch (parseErr) {
-      console.warn("PDF text parsing warning:", parseErr);
+    // 3. Layout-Preserving PDF to Word Engine (PDF -> DOCX)
+    interface ExtractedDocxItem {
+      str: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      fontSize: number;
+      fontFamily: string;
     }
 
-    const hasExtractedText = pageTexts.some((p) => p && p.trim().length > 0);
-    const docChildren: Paragraph[] = [];
+    interface ExtractedDocxLine {
+      y: number;
+      items: ExtractedDocxItem[];
+    }
 
-    if (hasExtractedText) {
-      pageTexts.forEach((pageContent, pageIndex) => {
-        if (pageIndex > 0) {
-          docChildren.push(new Paragraph({ children: [new PageBreak()] }));
+    let docSections: any[] = [];
+    const uint8 = new Uint8Array(await file.arrayBuffer());
+
+    try {
+      const extracted = await extractTextItems(uint8);
+      const rawPages = (extracted.items as any[]) || [];
+
+      for (let pageIdx = 0; pageIdx < rawPages.length; pageIdx++) {
+        const pageItemsRaw = rawPages[pageIdx] || [];
+
+        // Filter and normalize text items
+        const items: ExtractedDocxItem[] = pageItemsRaw
+          .filter((it: any) => it.str && it.str.trim().length > 0)
+          .map((it: any) => ({
+            str: it.str.trim(),
+            x: Math.round(it.x * 10) / 10,
+            y: Math.round(it.y * 10) / 10,
+            width: Math.round((it.width || 0) * 10) / 10,
+            height: Math.round((it.height || 0) * 10) / 10,
+            fontSize: it.fontSize || 10,
+            fontFamily: it.fontFamily || "Arial",
+          }));
+
+        if (items.length === 0) continue;
+
+        // Group into lines by Y coordinate (within 3.5pt tolerance)
+        const lines: ExtractedDocxLine[] = [];
+        const sortedByY = [...items].sort((a: ExtractedDocxItem, b: ExtractedDocxItem) => b.y - a.y || a.x - b.x);
+
+        for (const item of sortedByY) {
+          const matched = lines.find((l: ExtractedDocxLine) => Math.abs(l.y - item.y) <= 3.5);
+          if (matched) {
+            matched.items.push(item);
+            matched.items.sort((a: ExtractedDocxItem, b: ExtractedDocxItem) => a.x - b.x);
+          } else {
+            lines.push({
+              y: item.y,
+              items: [item],
+            });
+          }
         }
 
-        const rawLines = pageContent.split(/\r?\n/);
-        let currentParagraphLines: string[] = [];
+        // Sort lines from top of page to bottom
+        lines.sort((a: ExtractedDocxLine, b: ExtractedDocxLine) => b.y - a.y);
 
-        const flushParagraph = () => {
-          if (currentParagraphLines.length > 0) {
-            const blockText = currentParagraphLines.join(" ").trim();
-            if (blockText) {
-              const isShort = blockText.length < 60;
-              const isUppercase = blockText === blockText.toUpperCase() && /[A-Z]/.test(blockText);
-              const isTitleLike = pageIndex === 0 && docChildren.length === 0 && blockText.length < 80;
+        const pageChildren: (Paragraph | Table)[] = [];
+        let i = 0;
 
-              if (isTitleLike) {
-                docChildren.push(
-                  new Paragraph({
-                    text: blockText,
-                    heading: HeadingLevel.TITLE,
-                    spacing: { after: 200 },
-                  })
-                );
-              } else if (isShort && isUppercase) {
-                docChildren.push(
-                  new Paragraph({
-                    text: blockText,
-                    heading: HeadingLevel.HEADING_2,
-                    spacing: { before: 240, after: 120 },
-                  })
-                );
-              } else {
-                docChildren.push(
-                  new Paragraph({
+        while (i < lines.length) {
+          const line = lines[i];
+
+          // 1. Check for tabular regions (tables with columns)
+          const tableLines: ExtractedDocxLine[] = [];
+          let j = i;
+          while (j < lines.length && lines[j].items.length >= 3) {
+            tableLines.push(lines[j]);
+            j++;
+          }
+
+          if (tableLines.length >= 2) {
+            // Cluster columns by X positions across the rows
+            const colClusters: { center: number; points: number[] }[] = [];
+            tableLines.forEach((row: ExtractedDocxLine) => {
+              row.items.forEach((it: ExtractedDocxItem) => {
+                const existing = colClusters.find((c) => Math.abs(c.center - it.x) < 40);
+                if (existing) {
+                  existing.points.push(it.x);
+                  existing.center =
+                    existing.points.reduce((a, b) => a + b, 0) / existing.points.length;
+                } else {
+                  colClusters.push({ center: it.x, points: [it.x] });
+                }
+              });
+            });
+
+            colClusters.sort((a, b) => a.center - b.center);
+            const colStarts = colClusters.map((c) => c.center);
+            const numCols = colStarts.length;
+
+            const docxTableRows = tableLines.map((row: ExtractedDocxLine, rIdx: number) => {
+              const cells: TableCell[] = [];
+              for (let c = 0; c < numCols; c++) {
+                const startX = c === 0 ? 0 : (colStarts[c] + colStarts[c - 1]) / 2;
+                const endX = c === numCols - 1 ? 9999 : (colStarts[c] + colStarts[c + 1]) / 2;
+
+                const matchingItems = row.items.filter((it: ExtractedDocxItem) => it.x >= startX && it.x < endX);
+                const cellText = matchingItems.map((it: ExtractedDocxItem) => it.str).join(" ");
+                const isHeader = rIdx === 0;
+                const primaryItem = matchingItems[0];
+                const fontSize = primaryItem
+                  ? Math.max(16, Math.min(26, Math.round(primaryItem.fontSize * 2)))
+                  : 20;
+
+                cells.push(
+                  new TableCell({
                     children: [
-                      new TextRun({
-                        text: blockText,
-                        size: 24, // 12pt standard readable font
+                      new Paragraph({
+                        children: [
+                          new TextRun({
+                            text: cellText || " ",
+                            bold:
+                              isHeader ||
+                              (primaryItem?.fontSize >= 11) ||
+                              primaryItem?.fontFamily?.toLowerCase().includes("bold"),
+                            size: fontSize,
+                            font: "Arial",
+                            color: "1e293b",
+                          }),
+                        ],
+                        spacing: { before: 80, after: 80 },
                       }),
                     ],
-                    spacing: { after: 140, line: 276 },
+                    borders: {
+                      top: { style: BorderStyle.SINGLE, size: 2, color: "E2E8F0" },
+                      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+                      left: { style: BorderStyle.NONE },
+                      right: { style: BorderStyle.NONE },
+                    },
+                    shading: isHeader ? { fill: "F8FAFC" } : undefined,
                   })
                 );
               }
-            }
-            currentParagraphLines = [];
-          }
-        };
+              return new TableRow({ children: cells });
+            });
 
-        for (const rawLine of rawLines) {
-          const line = rawLine.trim();
-          if (!line) {
-            flushParagraph();
-          } else {
-            currentParagraphLines.push(line);
-            if (line.endsWith(".") || line.endsWith(":") || line.endsWith("!") || line.endsWith("?")) {
-              flushParagraph();
-            }
+            pageChildren.push(
+              new Table({
+                rows: docxTableRows,
+                width: { size: 100, type: WidthType.PERCENTAGE },
+              })
+            );
+
+            i = j;
+            continue;
           }
+
+          // 2. Multi-column key-value / status row (e.g. Left info, Right info)
+          if (line.items.length === 2 && line.items[1].x - line.items[0].x > 160) {
+            const leftItem = line.items[0];
+            const rightItem = line.items[1];
+
+            pageChildren.push(
+              new Table({
+                rows: [
+                  new TableRow({
+                    children: [
+                      new TableCell({
+                        children: [
+                          new Paragraph({
+                            children: [
+                              new TextRun({
+                                text: leftItem.str,
+                                bold:
+                                  leftItem.fontSize >= 12 ||
+                                  leftItem.fontFamily?.toLowerCase().includes("bold"),
+                                size: Math.round(leftItem.fontSize * 2),
+                                font: "Arial",
+                                color: "1e293b",
+                              }),
+                            ],
+                            spacing: { before: 60, after: 60 },
+                          }),
+                        ],
+                        width: { size: 50, type: WidthType.PERCENTAGE },
+                        borders: {
+                          top: { style: BorderStyle.NONE },
+                          bottom: { style: BorderStyle.NONE },
+                          left: { style: BorderStyle.NONE },
+                          right: { style: BorderStyle.NONE },
+                        },
+                      }),
+                      new TableCell({
+                        children: [
+                          new Paragraph({
+                            alignment: AlignmentType.RIGHT,
+                            children: [
+                              new TextRun({
+                                text: rightItem.str,
+                                bold:
+                                  rightItem.fontSize >= 12 ||
+                                  rightItem.fontFamily?.toLowerCase().includes("bold"),
+                                size: Math.round(rightItem.fontSize * 2),
+                                font: "Arial",
+                                color: "1e293b",
+                              }),
+                            ],
+                            spacing: { before: 60, after: 60 },
+                          }),
+                        ],
+                        width: { size: 50, type: WidthType.PERCENTAGE },
+                        borders: {
+                          top: { style: BorderStyle.NONE },
+                          bottom: { style: BorderStyle.NONE },
+                          left: { style: BorderStyle.NONE },
+                          right: { style: BorderStyle.NONE },
+                        },
+                      }),
+                    ],
+                  }),
+                ],
+                width: { size: 100, type: WidthType.PERCENTAGE },
+              })
+            );
+            i++;
+            continue;
+          }
+
+          // 3. Standard line or Heading
+          const maxFont = Math.max(...line.items.map((it: ExtractedDocxItem) => it.fontSize));
+          const isTitle = maxFont >= 15;
+          const isHeading = maxFont >= 12 && maxFont < 15;
+          const isCentered =
+            line.items.length === 1 &&
+            Math.abs(line.items[0].x + line.items[0].width / 2 - 297.6) < 35;
+
+          const runs = line.items.map((it: ExtractedDocxItem) => {
+            return new TextRun({
+              text: it.str + " ",
+              bold: isTitle || isHeading || it.fontFamily?.toLowerCase().includes("bold"),
+              size: Math.max(16, Math.min(36, Math.round(it.fontSize * 2))),
+              font: "Arial",
+              color: isTitle ? "0f172a" : "1e293b",
+            });
+          });
+
+          pageChildren.push(
+            new Paragraph({
+              alignment: isCentered ? AlignmentType.CENTER : AlignmentType.LEFT,
+              spacing: {
+                before: isTitle ? 180 : isHeading ? 120 : 50,
+                after: isTitle ? 120 : isHeading ? 80 : 50,
+              },
+              children: runs,
+            })
+          );
+
+          i++;
         }
-        flushParagraph();
+
+        docSections.push({
+          properties: {
+            page: {
+              size: { width: 11906, height: 16838 }, // Standard A4 (dxa)
+              margin: { top: 900, bottom: 900, left: 900, right: 900 },
+            },
+          },
+          children:
+            pageChildren.length > 0
+              ? pageChildren
+              : [new Paragraph({ text: baseName })],
+        });
+      }
+    } catch (parseErr) {
+      console.warn("Layout extraction warning:", parseErr);
+    }
+
+    if (docSections.length === 0) {
+      // Fallback if extraction returned 0 pages
+      docSections.push({
+        properties: {},
+        children: [
+          new Paragraph({
+            text: baseName.replace(/[_-]/g, " "),
+            heading: HeadingLevel.TITLE,
+            spacing: { after: 200 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: "Original File: ",
+                bold: true,
+              }),
+              new TextRun({
+                text: file.name,
+                italics: true,
+              }),
+            ],
+          }),
+        ],
       });
-    } else {
-      docChildren.push(
-        new Paragraph({
-          text: baseName.replace(/[_-]/g, " "),
-          heading: HeadingLevel.TITLE,
-          spacing: { after: 200 },
-        }),
-        new Paragraph({
-          children: [
-            new TextRun({
-              text: "Original File: ",
-              bold: true,
-            }),
-            new TextRun({
-              text: file.name,
-              italics: true,
-            }),
-          ],
-          spacing: { after: 120 },
-        }),
-        new Paragraph({
-          children: [
-            new TextRun({
-              text: `Pages Detected: ${totalPages}`,
-            }),
-          ],
-          spacing: { after: 200 },
-        })
-      );
     }
 
     const doc = new Document({
-      sections: [
-        {
-          properties: {},
-          children: docChildren,
-        },
-      ],
+      sections: docSections,
     });
 
     const docxBuffer = await Packer.toBuffer(doc);
