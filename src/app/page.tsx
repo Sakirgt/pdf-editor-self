@@ -80,7 +80,7 @@ export default function Home() {
           </h1>
 
           <p className="text-sm sm:text-base text-zinc-400 max-w-xl mb-8 leading-relaxed">
-            Convert PDFs to Word, Word to PDF, PDF to Excel, and more with pixel-perfect precision. Zero watermarks, lightning-fast cloud conversion, backed by Supabase.
+            Edit PDFs directly with pixel-perfect visual precision, or convert PDFs to Word documents with zero formatting loss. 100% free, fast, and secure.
           </p>
 
           {/* Search & Category Filter Bar */}
@@ -95,17 +95,20 @@ export default function Home() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search tools (e.g., PDF to Word, Excel, Image)..."
+                placeholder="Search tools (e.g., Edit PDF, PDF to Word)..."
                 className="w-full pl-11 pr-4 py-3.5 rounded-2xl bg-zinc-900/90 border border-zinc-800 text-white placeholder-zinc-500 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-500 transition-all shadow-lg shadow-black/40"
               />
             </div>
 
-            {/* Category Pills */}
-            <div className="flex items-center justify-center gap-2 p-1.5 rounded-xl bg-zinc-900/70 border border-zinc-800/80 max-w-fit mx-auto">
+            {/* Quick Filter Pills */}
+            <div className="flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-xl bg-zinc-900/70 border border-zinc-800/80 max-w-fit mx-auto">
               <button
-                onClick={() => setActiveCategory("all")}
+                onClick={() => {
+                  setActiveCategory("all");
+                  setSearchQuery("");
+                }}
                 className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  activeCategory === "all"
+                  searchQuery === ""
                     ? "bg-red-600 text-white shadow-md shadow-red-600/30"
                     : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
                 }`}
@@ -113,24 +116,30 @@ export default function Home() {
                 All Tools ({TOOLS.length})
               </button>
               <button
-                onClick={() => setActiveCategory("from-pdf")}
+                onClick={() => {
+                  setActiveCategory("all");
+                  setSearchQuery("edit");
+                }}
                 className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  activeCategory === "from-pdf"
+                  searchQuery.toLowerCase() === "edit"
                     ? "bg-red-600 text-white shadow-md shadow-red-600/30"
                     : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
                 }`}
               >
-                Convert from PDF
+                Edit PDF Online
               </button>
               <button
-                onClick={() => setActiveCategory("to-pdf")}
+                onClick={() => {
+                  setActiveCategory("all");
+                  setSearchQuery("word");
+                }}
                 className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                  activeCategory === "to-pdf"
+                  searchQuery.toLowerCase() === "word"
                     ? "bg-red-600 text-white shadow-md shadow-red-600/30"
                     : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
                 }`}
               >
-                Convert to PDF
+                PDF to Word
               </button>
             </div>
           </div>
@@ -145,11 +154,11 @@ export default function Home() {
               Popular Document Utilities
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Select a tool below to open the drag & drop converter
+              Select a tool below to open the editor or converter
             </p>
           </div>
           <span className="text-xs text-zinc-500 font-medium">
-            Showing {filteredTools.length} tools
+            Showing {filteredTools.length} {filteredTools.length === 1 ? "tool" : "tools"}
           </span>
         </div>
 
@@ -167,7 +176,7 @@ export default function Home() {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 max-w-4xl mx-auto gap-6">
             {filteredTools.map((tool) => (
               <Link
                 key={tool.slug}

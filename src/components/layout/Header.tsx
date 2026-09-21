@@ -80,22 +80,16 @@ export const Header: React.FC<HeaderProps> = ({ userEmail, onOpenAuth }) => {
           </div>
 
           <Link
+            href="/tool/edit-pdf"
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/50 transition-colors"
+          >
+            Edit PDF Online
+          </Link>
+          <Link
             href="/tool/pdf-to-word"
             className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/50 transition-colors"
           >
             PDF to Word
-          </Link>
-          <Link
-            href="/tool/word-to-pdf"
-            className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/50 transition-colors"
-          >
-            Word to PDF
-          </Link>
-          <Link
-            href="/tool/pdf-to-excel"
-            className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800/50 transition-colors"
-          >
-            PDF to Excel
           </Link>
         </nav>
       </div>
