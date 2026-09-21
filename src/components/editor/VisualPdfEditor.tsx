@@ -15,6 +15,7 @@ import {
   Loader2,
   CheckCircle2,
   Sparkles,
+  Maximize2,
 } from "lucide-react";
 
 interface TextOverlayItem {
@@ -66,7 +67,7 @@ interface VisualPdfEditorProps {
   onClose: () => void;
 }
 
-// Fallback sanitization for standard fonts (like Helvetica WinAnsi)
+// Fallback sanitization for standard PDF fonts (like Helvetica WinAnsi)
 function sanitizeForStandardPdf(text: string): string {
   if (!text) return "";
   return text
@@ -84,7 +85,7 @@ function sanitizeForStandardPdf(text: string): string {
 export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClose }) => {
   const [numPages, setNumPages] = useState<number>(1);
   const [currentPage, setCurrentPage] = useState<number>(1);
-  const [scale, setScale] = useState<number>(1.25);
+  const [scale, setScale] = useState<number>(1.0);
   const [activeTool, setActiveTool] = useState<"edit" | "text" | "erase">("edit");
   const [loading, setLoading] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
@@ -132,8 +133,21 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
   const overlayRef = useRef<HTMLDivElement>(null);
   const pdfDocRef = useRef<unknown>(null);
   const originalBytesRef = useRef<ArrayBuffer | null>(null);
+  const unscaledPageWidthRef = useRef<number>(595);
 
-  // Load PDF document on mount
+  // Fit to screen width helper
+  const handleFitWidth = () => {
+    if (typeof window === "undefined") return;
+    const padding = window.innerWidth < 640 ? 24 : 64;
+    const availableWidth = window.innerWidth - padding;
+    const calculatedScale = Math.min(
+      Math.max(Number((availableWidth / unscaledPageWidthRef.current).toFixed(2)), 0.35),
+      2.0
+    );
+    setScale(calculatedScale);
+  };
+
+  // Load PDF document on mount and calculate mobile auto-scale
   useEffect(() => {
     let isCancelled = false;
 
@@ -152,7 +166,32 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
 
         pdfDocRef.current = doc;
         setNumPages(doc.numPages);
-        renderPage(doc, currentPage, scale);
+
+        // Get unscaled page size for responsive auto-fit
+        const firstPage = (await doc.getPage(1)) as { getViewport: (opts: { scale: number }) => { width: number } };
+        const unscaledViewport = firstPage.getViewport({ scale: 1 });
+        unscaledPageWidthRef.current = unscaledViewport.width || 595;
+
+        // Auto-fit scale on mobile vs desktop
+        let initialScale = 1.15;
+        if (typeof window !== "undefined") {
+          const screenWidth = window.innerWidth;
+          if (screenWidth < 640) {
+            // On mobile phones, fit to screen width so full document is visible without horizontal scrolling
+            initialScale = Math.min(
+              Math.max(Number(((screenWidth - 24) / unscaledPageWidthRef.current).toFixed(2)), 0.45),
+              0.95
+            );
+          } else if (screenWidth < 1024) {
+            initialScale = Math.min(
+              Math.max(Number(((screenWidth - 48) / unscaledPageWidthRef.current).toFixed(2)), 0.65),
+              1.1
+            );
+          }
+        }
+
+        setScale(initialScale);
+        renderPage(doc, currentPage, initialScale);
       } catch (err) {
         console.error("Failed to load PDF in VisualPdfEditor:", err);
       } finally {
@@ -493,6 +532,41 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
     setCurrentEraserBox(null);
   };
 
+  // Touch event handlers for mobile whiteout dragging
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (activeTool !== "erase") return;
+    if (!overlayRef.current || e.touches.length !== 1) return;
+
+    const rect = overlayRef.current.getBoundingClientRect();
+    const touch = e.touches[0];
+    const startX = touch.clientX - rect.left;
+    const startY = touch.clientY - rect.top;
+
+    setIsDraggingEraser(true);
+    setEraserStart({ x: startX, y: startY });
+    setCurrentEraserBox({ left: startX, top: startY, width: 0, height: 0 });
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!isDraggingEraser || !eraserStart || !overlayRef.current || e.touches.length !== 1) return;
+
+    const rect = overlayRef.current.getBoundingClientRect();
+    const touch = e.touches[0];
+    const currentX = touch.clientX - rect.left;
+    const currentY = touch.clientY - rect.top;
+
+    const left = Math.min(eraserStart.x, currentX);
+    const top = Math.min(eraserStart.y, currentY);
+    const width = Math.abs(currentX - eraserStart.x);
+    const height = Math.abs(currentY - eraserStart.y);
+
+    setCurrentEraserBox({ left, top, width, height });
+  };
+
+  const handleTouchEnd = () => {
+    handleMouseUp();
+  };
+
   // Compile and Save PDF using original PDF bytes & pdf-lib with embedded Arial Unicode font
   const handleSavePdf = async () => {
     if (!originalBytesRef.current) return;
@@ -653,29 +727,30 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950 text-zinc-100 select-none overflow-hidden font-sans">
       {/* Top Header & Navigation */}
-      <header className="h-16 bg-zinc-900 border-b border-zinc-800 px-4 sm:px-6 flex items-center justify-between shrink-0 z-20">
+      <header className="h-14 md:h-16 bg-zinc-900 border-b border-zinc-800 px-3 sm:px-6 flex items-center justify-between shrink-0 z-30">
         {/* Left: Back & Document Title */}
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2 sm:space-x-3 min-w-0">
           <button
             onClick={onClose}
-            className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
+            className="p-1.5 sm:p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer shrink-0"
             title="Exit Editor"
           >
             <ArrowLeft size={18} />
           </button>
-          <div className="flex flex-col">
-            <h2 className="text-sm font-bold text-white max-w-[200px] sm:max-w-[340px] truncate">
+          <div className="flex flex-col min-w-0">
+            <h2 className="text-xs sm:text-sm font-bold text-white max-w-[130px] sm:max-w-[280px] md:max-w-[340px] truncate">
               {pdfFile.name}
             </h2>
-            <span className="text-[11px] text-emerald-400 flex items-center gap-1 font-medium">
-              <Sparkles size={11} />
-              Original PDF Format 100% Preserved
+            <span className="text-[10px] sm:text-[11px] text-emerald-400 flex items-center gap-1 font-medium truncate">
+              <Sparkles size={10} className="shrink-0" />
+              <span className="hidden sm:inline">Original PDF Format 100% Preserved</span>
+              <span className="sm:hidden">Original Preserved</span>
             </span>
           </div>
         </div>
 
-        {/* Center: Tools (Edit Text, Add Text, Whiteout Eraser) */}
-        <div className="flex items-center gap-1 bg-zinc-950/80 p-1 rounded-2xl border border-zinc-800">
+        {/* Center: Tools Switcher (Desktop Only - on mobile it moves to bottom dock) */}
+        <div className="hidden md:flex items-center gap-1 bg-zinc-950/80 p-1 rounded-2xl border border-zinc-800">
           <button
             onClick={() => {
               setActiveTool("edit");
@@ -688,7 +763,7 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
             }`}
           >
             <MousePointer size={14} />
-            <span className="hidden sm:inline">Click & Edit Text</span>
+            <span>Click & Edit Text</span>
           </button>
 
           <button
@@ -703,7 +778,7 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
             }`}
           >
             <Type size={14} />
-            <span className="hidden sm:inline">Add Text</span>
+            <span>Add Text</span>
           </button>
 
           <button
@@ -718,14 +793,14 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
             }`}
           >
             <Eraser size={14} />
-            <span className="hidden sm:inline">Whiteout / Erase</span>
+            <span>Whiteout / Erase</span>
           </button>
         </div>
 
         {/* Right: Save & Download */}
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
           {saveStatus && (
-            <span className="text-xs text-emerald-400 font-medium px-2 py-1 rounded bg-emerald-950/50 border border-emerald-800/50 animate-fade-in hidden sm:inline-block">
+            <span className="text-[11px] sm:text-xs text-emerald-400 font-medium px-2 py-0.5 rounded bg-emerald-950/50 border border-emerald-800/50 animate-fade-in hidden sm:inline-block">
               {saveStatus}
             </span>
           )}
@@ -733,84 +808,95 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
           <button
             onClick={handleSavePdf}
             disabled={isSaving || loading}
-            className="px-5 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-red-600/30 transition-all cursor-pointer disabled:opacity-50"
+            className="px-3.5 sm:px-5 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 active:scale-95 text-white text-xs font-bold flex items-center gap-1.5 sm:gap-2 shadow-lg shadow-red-600/30 transition-all cursor-pointer disabled:opacity-50"
           >
             {isSaving ? (
               <>
-                <Loader2 size={16} className="animate-spin" />
-                <span>Saving PDF...</span>
+                <Loader2 size={15} className="animate-spin" />
+                <span className="hidden sm:inline">Saving PDF...</span>
+                <span className="sm:hidden">Saving...</span>
               </>
             ) : (
               <>
-                <Download size={16} />
-                <span>Save & Download PDF</span>
+                <Download size={15} />
+                <span className="hidden sm:inline">Save & Download PDF</span>
+                <span className="sm:hidden font-bold">Save PDF</span>
               </>
             )}
           </button>
         </div>
       </header>
 
-      {/* Floating Control Ribbon (Page navigation & Zoom) */}
-      <div className="h-10 bg-zinc-900/90 border-b border-zinc-800/80 px-4 flex items-center justify-between text-xs text-zinc-400 shrink-0">
-        <div className="flex items-center space-x-2">
-          <span className="text-[11px] text-zinc-400">
-            {activeTool === "edit" &&
-              "👉 Click directly on any text/number to edit. Use ◀ ▶ ▲ ▼ buttons or Alt+Arrow keys to nudge."}
-            {activeTool === "text" && "✍️ Click anywhere on the PDF page to add new text."}
-            {activeTool === "erase" && "⬜ Click & drag to draw a whiteout box over unwanted areas."}
+      {/* Floating Control Ribbon (Page navigation, Zoom, Fit) */}
+      <div className="h-9 sm:h-10 bg-zinc-900/90 border-b border-zinc-800/80 px-3 sm:px-4 flex items-center justify-between text-xs text-zinc-400 shrink-0">
+        <div className="flex items-center space-x-2 min-w-0">
+          <span className="text-[11px] text-zinc-400 truncate">
+            {activeTool === "edit" && "👉 Click on text to edit"}
+            {activeTool === "text" && "✍️ Click page to add text"}
+            {activeTool === "erase" && "⬜ Drag to whiteout"}
           </span>
         </div>
 
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
           {/* Zoom Controls */}
-          <div className="flex items-center space-x-1 bg-zinc-950 px-2 py-1 rounded-lg border border-zinc-800">
+          <div className="flex items-center space-x-0.5 sm:space-x-1 bg-zinc-950 px-1 sm:px-2 py-0.5 rounded-lg border border-zinc-800">
             <button
-              onClick={() => setScale((s) => Math.max(Number((s - 0.2).toFixed(1)), 0.8))}
-              className="p-0.5 hover:text-white cursor-pointer"
+              onClick={() => setScale((s) => Math.max(Number((s - 0.15).toFixed(2)), 0.35))}
+              className="p-1 hover:text-white cursor-pointer"
               title="Zoom Out"
             >
               <ZoomOut size={13} />
             </button>
-            <span className="text-[11px] font-mono w-10 text-center text-zinc-300">
+            <span className="text-[10px] sm:text-[11px] font-mono w-8 sm:w-10 text-center text-zinc-300">
               {Math.round(scale * 100)}%
             </span>
             <button
-              onClick={() => setScale((s) => Math.min(Number((s + 0.2).toFixed(1)), 2.2))}
-              className="p-0.5 hover:text-white cursor-pointer"
+              onClick={() => setScale((s) => Math.min(Number((s + 0.15).toFixed(2)), 2.2))}
+              className="p-1 hover:text-white cursor-pointer"
               title="Zoom In"
             >
               <ZoomIn size={13} />
             </button>
           </div>
 
+          {/* Fit Width Button */}
+          <button
+            onClick={handleFitWidth}
+            className="px-2 py-1 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-[10px] font-semibold text-zinc-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1"
+            title="Fit to Screen Width"
+          >
+            <Maximize2 size={11} className="hidden sm:inline" />
+            <span>Fit</span>
+          </button>
+
           {/* Page Navigation */}
           {numPages > 1 && (
-            <div className="flex items-center space-x-1.5 bg-zinc-950 px-2 py-1 rounded-lg border border-zinc-800">
+            <div className="flex items-center space-x-1 bg-zinc-950 px-1.5 sm:px-2 py-0.5 rounded-lg border border-zinc-800">
               <button
                 onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
                 disabled={currentPage === 1}
                 className="p-0.5 hover:text-white disabled:opacity-30 cursor-pointer"
               >
-                <ChevronLeft size={14} />
+                <ChevronLeft size={13} />
               </button>
-              <span className="text-[11px] text-zinc-300">
-                {currentPage} / {numPages}
+              <span className="text-[10px] sm:text-[11px] text-zinc-300">
+                {currentPage}/{numPages}
               </span>
               <button
                 onClick={() => setCurrentPage((p) => Math.min(p + 1, numPages))}
                 disabled={currentPage === numPages}
                 className="p-0.5 hover:text-white disabled:opacity-30 cursor-pointer"
               >
-                <ChevronRight size={14} />
+                <ChevronRight size={13} />
               </button>
             </div>
           )}
         </div>
       </div>
 
-      {/* Main Document Viewport */}
+      {/* Main Document Viewport (pb-24 on mobile ensures bottom dock never covers content) */}
       <div
-        className="flex-1 overflow-auto bg-zinc-950 p-6 flex justify-center items-start relative"
+        className="flex-1 overflow-auto bg-zinc-950 p-2 sm:p-6 pb-24 md:pb-6 flex justify-center items-start relative touch-pan-x touch-pan-y"
         onClick={() => {
           if (activeTool === "edit") {
             setActiveEditingId(null);
@@ -829,6 +915,9 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
             className="relative shadow-2xl rounded-lg bg-white overflow-visible select-none"
             style={{
               cursor: activeTool === "erase" ? "crosshair" : activeTool === "text" ? "text" : "default",
@@ -884,6 +973,7 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
               const curTop = item.domTop - (item.offsetY || 0) * scale;
               // Auto-expanding width so text never clips or truncates
               const minW = Math.max(item.domWidth, (item.currentStr.length + 1) * scaledFontSize * 0.62);
+              const isToolbarBelow = curTop < 45;
 
               if (isEditing) {
                 return (
@@ -899,12 +989,15 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                     className="absolute"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {/* Floating Micro-Nudge & Font Toolbar */}
+                    {/* Floating Micro-Nudge & Font Toolbar with Touch-friendly targets */}
                     <div
                       onMouseDown={(e) => e.stopPropagation()}
-                      className="absolute -top-10 left-0 flex items-center gap-1 bg-zinc-900 border border-zinc-700 shadow-2xl px-2 py-1 rounded-lg text-xs text-white z-50 whitespace-nowrap"
+                      onTouchStart={(e) => e.stopPropagation()}
+                      className={`absolute ${
+                        isToolbarBelow ? "top-full mt-2" : "-top-11"
+                      } left-0 flex items-center gap-1 bg-zinc-900/95 backdrop-blur-md border border-zinc-700 shadow-2xl px-2 py-1 rounded-xl text-xs text-white z-50 whitespace-nowrap`}
                     >
-                      <span className="text-zinc-400 font-medium text-[10px] mr-0.5">Nudge:</span>
+                      <span className="text-zinc-400 font-medium text-[10px] mr-0.5 hidden sm:inline">Nudge:</span>
                       <button
                         type="button"
                         onClick={(e) => {
@@ -912,7 +1005,7 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                           e.stopPropagation();
                           handleNudge(item.id, -0.5, 0);
                         }}
-                        className="px-1.5 py-0.5 hover:bg-zinc-700 rounded text-zinc-200 hover:text-white font-bold cursor-pointer"
+                        className="w-7 h-7 flex items-center justify-center hover:bg-zinc-700 active:bg-zinc-600 rounded-lg text-zinc-200 hover:text-white font-bold cursor-pointer"
                         title="Nudge Left (Alt+Left)"
                       >
                         ◀
@@ -924,7 +1017,7 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                           e.stopPropagation();
                           handleNudge(item.id, 0.5, 0);
                         }}
-                        className="px-1.5 py-0.5 hover:bg-zinc-700 rounded text-zinc-200 hover:text-white font-bold cursor-pointer"
+                        className="w-7 h-7 flex items-center justify-center hover:bg-zinc-700 active:bg-zinc-600 rounded-lg text-zinc-200 hover:text-white font-bold cursor-pointer"
                         title="Nudge Right (Alt+Right)"
                       >
                         ▶
@@ -936,7 +1029,7 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                           e.stopPropagation();
                           handleNudge(item.id, 0, 0.5);
                         }}
-                        className="px-1.5 py-0.5 hover:bg-zinc-700 rounded text-zinc-200 hover:text-white font-bold cursor-pointer"
+                        className="w-7 h-7 flex items-center justify-center hover:bg-zinc-700 active:bg-zinc-600 rounded-lg text-zinc-200 hover:text-white font-bold cursor-pointer"
                         title="Nudge Up (Alt+Up)"
                       >
                         ▲
@@ -948,12 +1041,12 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                           e.stopPropagation();
                           handleNudge(item.id, 0, -0.5);
                         }}
-                        className="px-1.5 py-0.5 hover:bg-zinc-700 rounded text-zinc-200 hover:text-white font-bold cursor-pointer"
+                        className="w-7 h-7 flex items-center justify-center hover:bg-zinc-700 active:bg-zinc-600 rounded-lg text-zinc-200 hover:text-white font-bold cursor-pointer"
                         title="Nudge Down (Alt+Down)"
                       >
                         ▼
                       </button>
-                      <div className="w-[1px] h-3.5 bg-zinc-700 mx-0.5" />
+                      <div className="w-[1px] h-4 bg-zinc-700 mx-0.5" />
                       <button
                         type="button"
                         onClick={(e) => {
@@ -961,7 +1054,7 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                           e.stopPropagation();
                           handleAdjustFontSize(item.id, -0.5);
                         }}
-                        className="px-1.5 py-0.5 hover:bg-zinc-700 rounded text-zinc-200 hover:text-white text-[10px] font-bold cursor-pointer"
+                        className="px-2 h-7 flex items-center justify-center hover:bg-zinc-700 active:bg-zinc-600 rounded-lg text-zinc-200 hover:text-white text-[11px] font-bold cursor-pointer"
                         title="Decrease Font Size"
                       >
                         A-
@@ -973,14 +1066,14 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                           e.stopPropagation();
                           handleAdjustFontSize(item.id, 0.5);
                         }}
-                        className="px-1.5 py-0.5 hover:bg-zinc-700 rounded text-zinc-200 hover:text-white text-[10px] font-bold cursor-pointer"
+                        className="px-2 h-7 flex items-center justify-center hover:bg-zinc-700 active:bg-zinc-600 rounded-lg text-zinc-200 hover:text-white text-[11px] font-bold cursor-pointer"
                         title="Increase Font Size"
                       >
                         A+
                       </button>
                       {item.isEdited && (
                         <>
-                          <div className="w-[1px] h-3.5 bg-zinc-700 mx-0.5" />
+                          <div className="w-[1px] h-4 bg-zinc-700 mx-0.5" />
                           <button
                             type="button"
                             onClick={(e) => {
@@ -988,14 +1081,14 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                               e.stopPropagation();
                               handleResetItem(item.id);
                             }}
-                            className="px-1.5 py-0.5 hover:bg-zinc-700 rounded text-amber-400 text-[10px] font-medium cursor-pointer"
+                            className="px-2 h-7 flex items-center justify-center hover:bg-zinc-700 rounded-lg text-amber-400 text-[10px] font-medium cursor-pointer"
                             title="Reset to Original"
                           >
                             Reset
                           </button>
                         </>
                       )}
-                      <div className="w-[1px] h-3.5 bg-zinc-700 mx-0.5" />
+                      <div className="w-[1px] h-4 bg-zinc-700 mx-0.5" />
                       <button
                         type="button"
                         onClick={(e) => {
@@ -1003,10 +1096,10 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
                           e.stopPropagation();
                           setActiveEditingId(null);
                         }}
-                        className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-500 rounded text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                        className="px-2.5 h-7 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
                         title="Done"
                       >
-                        <CheckCircle2 size={12} />
+                        <CheckCircle2 size={13} />
                         Done
                       </button>
                     </div>
@@ -1151,6 +1244,54 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
               ))}
           </div>
         )}
+      </div>
+
+      {/* Mobile Bottom Action Dock (Thumb-friendly tool switcher) */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-zinc-900/95 backdrop-blur-xl border-t border-zinc-800 px-3 py-2 flex items-center justify-around shadow-2xl safe-area-inset-bottom">
+        <button
+          onClick={() => {
+            setActiveTool("edit");
+            setActiveEditingId(null);
+          }}
+          className={`flex flex-col items-center justify-center gap-1 flex-1 py-1.5 rounded-xl transition-all cursor-pointer ${
+            activeTool === "edit"
+              ? "bg-red-600 text-white font-bold shadow-md shadow-red-600/30"
+              : "text-zinc-400 hover:text-white active:bg-zinc-800"
+          }`}
+        >
+          <MousePointer size={18} />
+          <span className="text-[11px]">Edit Text</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTool("text");
+            setActiveEditingId(null);
+          }}
+          className={`flex flex-col items-center justify-center gap-1 flex-1 py-1.5 rounded-xl transition-all cursor-pointer ${
+            activeTool === "text"
+              ? "bg-red-600 text-white font-bold shadow-md shadow-red-600/30"
+              : "text-zinc-400 hover:text-white active:bg-zinc-800"
+          }`}
+        >
+          <Type size={18} />
+          <span className="text-[11px]">Add Text</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTool("erase");
+            setActiveEditingId(null);
+          }}
+          className={`flex flex-col items-center justify-center gap-1 flex-1 py-1.5 rounded-xl transition-all cursor-pointer ${
+            activeTool === "erase"
+              ? "bg-red-600 text-white font-bold shadow-md shadow-red-600/30"
+              : "text-zinc-400 hover:text-white active:bg-zinc-800"
+          }`}
+        >
+          <Eraser size={18} />
+          <span className="text-[11px]">Whiteout</span>
+        </button>
       </div>
     </div>
   );
