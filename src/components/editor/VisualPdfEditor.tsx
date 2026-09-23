@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { supabase } from "@/lib/supabase/client";
+import { incrementGuestEditCount, incrementUserEditCount } from "@/lib/userStats";
 import {
   ArrowLeft,
   Download,
@@ -712,6 +714,18 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
         document.body.removeChild(link);
         URL.revokeObjectURL(downloadUrl);
       }, 1000);
+
+      // Increment edit count (tracked for user or guest)
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          await incrementUserEditCount(user.id);
+        } else {
+          incrementGuestEditCount();
+        }
+      } catch (countErr) {
+        console.warn("Failed to increment edit count:", countErr);
+      }
 
       setSaveStatus("Downloaded Edited PDF!");
       setTimeout(() => setSaveStatus(null), 3500);

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   FileText,
@@ -11,9 +11,11 @@ import {
   ChevronDown,
   Layers,
   Heart,
+  FileCheck,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { TOOLS } from "@/lib/tools";
+import { getGuestEditCount, getUserEditCount, GUEST_EDIT_LIMIT } from "@/lib/userStats";
 
 interface HeaderProps {
   userEmail: string | null;
@@ -22,9 +24,38 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ userEmail, onOpenAuth }) => {
   const [toolsDropdownOpen, setToolsDropdownOpen] = useState(false);
+  const [editCount, setEditCount] = useState<number>(0);
+
+  const loadCounts = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const count = await getUserEditCount(user.id);
+        setEditCount(count);
+      } else {
+        setEditCount(getGuestEditCount());
+      }
+    } catch {
+      setEditCount(getGuestEditCount());
+    }
+  };
+
+  useEffect(() => {
+    loadCounts();
+
+    const handleCountChange = () => {
+      loadCounts();
+    };
+
+    window.addEventListener("edit-count-changed", handleCountChange);
+    return () => {
+      window.removeEventListener("edit-count-changed", handleCountChange);
+    };
+  }, [userEmail]);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
+    setEditCount(getGuestEditCount());
   };
 
   return (
@@ -95,13 +126,17 @@ export const Header: React.FC<HeaderProps> = ({ userEmail, onOpenAuth }) => {
       </div>
 
       {/* Supabase User Profile & Auth */}
-      <div className="flex items-center space-x-3">
+      <div className="flex items-center space-x-2 sm:space-x-3">
         {userEmail ? (
           <div className="flex items-center space-x-2">
             <div className="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 shadow-inner">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <User size={13} className="text-zinc-400" />
-              <span className="max-w-[120px] sm:max-w-[160px] truncate font-medium">{userEmail}</span>
+              <User size={13} className="text-zinc-400 shrink-0" />
+              <span className="max-w-[95px] sm:max-w-[150px] truncate font-medium">{userEmail}</span>
+              <span className="ml-1 px-2 py-0.5 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 font-bold text-[10px] tracking-wide whitespace-nowrap flex items-center gap-1">
+                <FileCheck size={11} />
+                <span>{editCount} {editCount === 1 ? "PDF" : "PDFs"}</span>
+              </span>
             </div>
             <button
               onClick={handleSignOut}
@@ -112,13 +147,22 @@ export const Header: React.FC<HeaderProps> = ({ userEmail, onOpenAuth }) => {
             </button>
           </div>
         ) : (
-          <button
-            onClick={onOpenAuth}
-            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white text-xs font-semibold shadow-md shadow-red-500/20 transition-all cursor-pointer"
-          >
-            <LogIn size={14} />
-            <span>Sign In / Cloud Sync</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Free guest edits badge */}
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] text-zinc-400">
+              <span>Free Edits:</span>
+              <span className={`font-bold ${editCount >= GUEST_EDIT_LIMIT ? "text-red-400 font-extrabold" : "text-emerald-400"}`}>
+                {Math.max(0, GUEST_EDIT_LIMIT - editCount)} left
+              </span>
+            </div>
+            <button
+              onClick={onOpenAuth}
+              className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white text-xs font-semibold shadow-md shadow-red-500/20 transition-all cursor-pointer"
+            >
+              <LogIn size={14} />
+              <span>Sign In / Register</span>
+            </button>
+          </div>
         )}
       </div>
     </header>

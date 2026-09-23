@@ -25,7 +25,10 @@ import {
   Shield,
   Zap,
   Edit3,
+  Lock,
+  LogIn,
 } from "lucide-react";
+import { getGuestEditCount, hasReachedGuestLimit, GUEST_EDIT_LIMIT } from "@/lib/userStats";
 
 interface ToolPageProps {
   params: Promise<{ slug: string }>;
@@ -38,6 +41,8 @@ export default function ToolPage({ params }: ToolPageProps) {
 
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [authReason, setAuthReason] = useState<"limit_reached" | "general">("general");
+  const [guestEdits, setGuestEdits] = useState<number>(0);
 
   // Exact Layout Visual PDF Canvas Editor State
   const [isVisualEditorOpen, setIsVisualEditorOpen] = useState(false);
@@ -75,7 +80,16 @@ export default function ToolPage({ params }: ToolPageProps) {
       setUserEmail(session?.user?.email ?? null);
     });
 
-    return () => subscription.unsubscribe();
+    setGuestEdits(getGuestEditCount());
+    const handleCountChange = () => {
+      setGuestEdits(getGuestEditCount());
+    };
+    window.addEventListener("edit-count-changed", handleCountChange);
+
+    return () => {
+      subscription.unsubscribe();
+      window.removeEventListener("edit-count-changed", handleCountChange);
+    };
   }, []);
 
   if (!tool) {
@@ -141,6 +155,14 @@ export default function ToolPage({ params }: ToolPageProps) {
   // File drop & select handlers
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
+
+    // Check mandatory login for edit-pdf after 3 free guest edits
+    if (tool.slug === "edit-pdf" && !userEmail && hasReachedGuestLimit()) {
+      setAuthReason("limit_reached");
+      setIsAuthOpen(true);
+      return;
+    }
+
     const file = files[0];
 
     // Validate format
@@ -176,11 +198,27 @@ export default function ToolPage({ params }: ToolPageProps) {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+
+    if (tool.slug === "edit-pdf" && !userEmail && hasReachedGuestLimit()) {
+      setAuthReason("limit_reached");
+      setIsAuthOpen(true);
+      return;
+    }
+
     handleFiles(e.dataTransfer.files);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleFiles(e.target.files);
+  };
+
+  const handleUploadAreaClick = () => {
+    if (tool.slug === "edit-pdf" && !userEmail && hasReachedGuestLimit()) {
+      setAuthReason("limit_reached");
+      setIsAuthOpen(true);
+      return;
+    }
+    fileInputRef.current?.click();
   };
 
   const handleReset = () => {
@@ -394,50 +432,91 @@ export default function ToolPage({ params }: ToolPageProps) {
 
         {/* Dynamic Zone based on conversionStatus */}
         {conversionStatus === "idle" && (
-          /* Massive Drag & Drop Upload Zone */
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`w-full max-w-2xl p-12 sm:p-16 rounded-3xl border-2 border-dashed transition-all duration-300 cursor-pointer flex flex-col items-center text-center group ${
-              isDragging
-                ? "border-red-500 bg-red-500/10 scale-[1.02] shadow-2xl shadow-red-500/20"
-                : "border-zinc-700 hover:border-red-500/80 bg-zinc-900/60 hover:bg-zinc-900/90 shadow-xl"
-            }`}
-          >
-            <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-red-600/20 to-rose-600/10 border border-red-500/30 text-red-400 flex items-center justify-center mb-6 group-hover:scale-110 group-hover:border-red-500 transition-all duration-300 shadow-inner">
-              <UploadCloud size={40} className="group-hover:-translate-y-1 transition-transform" />
+          tool.slug === "edit-pdf" && !userEmail && hasReachedGuestLimit() ? (
+            /* Mandatory Login Block Card when 3 free edits reached */
+            <div className="w-full max-w-2xl p-10 sm:p-14 rounded-3xl border-2 border-red-500/40 bg-zinc-900/90 backdrop-blur-xl flex flex-col items-center text-center shadow-2xl animate-fade-in">
+              <div className="w-16 h-16 rounded-2xl bg-red-500/15 text-red-400 border border-red-500/30 flex items-center justify-center mb-5 shadow-inner">
+                <Lock size={32} />
+              </div>
+              <h3 className="text-2xl sm:text-3xl font-extrabold text-white mb-2 tracking-tight">
+                Sign In Required to Edit
+              </h3>
+              <p className="text-sm text-zinc-300 max-w-md mb-6 leading-relaxed">
+                You have reached your <strong>3 free guest edits</strong> limit. Please sign in or create a free account to continue editing PDFs with zero format loss.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthReason("limit_reached");
+                  setIsAuthOpen(true);
+                }}
+                className="px-7 py-3.5 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-sm flex items-center gap-2.5 shadow-xl shadow-red-600/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
+              >
+                <LogIn size={18} />
+                <span>Sign In / Create Free Account</span>
+              </button>
             </div>
+          ) : (
+            /* Drag & Drop Upload Zone */
+            <div className="w-full max-w-2xl flex flex-col items-center">
+              {tool.slug === "edit-pdf" && !userEmail && (
+                <div className="mb-3.5 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-zinc-900/90 border border-zinc-800 text-xs text-zinc-400 shadow-sm">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>
+                    Guest Access:{" "}
+                    <strong className="text-emerald-400">
+                      {Math.max(0, GUEST_EDIT_LIMIT - guestEdits)} of {GUEST_EDIT_LIMIT}
+                    </strong>{" "}
+                    free edits remaining
+                  </span>
+                </div>
+              )}
 
-            <h3 className="text-xl sm:text-2xl font-bold text-white mb-2">
-              {isDragging ? "Drop your document here!" : "Select or Drop your Document"}
-            </h3>
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={handleUploadAreaClick}
+                className={`w-full p-12 sm:p-16 rounded-3xl border-2 border-dashed transition-all duration-300 cursor-pointer flex flex-col items-center text-center group ${
+                  isDragging
+                    ? "border-red-500 bg-red-500/10 scale-[1.02] shadow-2xl shadow-red-500/20"
+                    : "border-zinc-700 hover:border-red-500/80 bg-zinc-900/60 hover:bg-zinc-900/90 shadow-xl"
+                }`}
+              >
+                <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-red-600/20 to-rose-600/10 border border-red-500/30 text-red-400 flex items-center justify-center mb-6 group-hover:scale-110 group-hover:border-red-500 transition-all duration-300 shadow-inner">
+                  <UploadCloud size={40} className="group-hover:-translate-y-1 transition-transform" />
+                </div>
 
-            <p className="text-xs sm:text-sm text-zinc-400 mb-6 max-w-sm leading-relaxed">
-              Drag & drop your <strong className="text-zinc-200">{tool.inputFormats.join(", ").toUpperCase()}</strong> file here, or click to browse from your device.
-            </p>
+                <h3 className="text-xl sm:text-2xl font-bold text-white mb-2">
+                  {isDragging ? "Drop your document here!" : "Select or Drop your Document"}
+                </h3>
 
-            <button
-              type="button"
-              className="px-6 py-3 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-sm flex items-center gap-2.5 shadow-lg shadow-red-600/25 group-hover:shadow-red-600/40 transition-all cursor-pointer"
-            >
-              <FileUp size={18} />
-              <span>Choose {tool.shortTitle.split(" ")[0]} File</span>
-            </button>
+                <p className="text-xs sm:text-sm text-zinc-400 mb-6 max-w-sm leading-relaxed">
+                  Drag & drop your <strong className="text-zinc-200">{tool.inputFormats.join(", ").toUpperCase()}</strong> file here, or click to browse from your device.
+                </p>
 
-            <div className="mt-8 flex items-center gap-4 text-[11px] text-zinc-500 font-medium">
-              <span className="flex items-center gap-1">
-                <Shield size={13} className="text-zinc-400" />
-                256-Bit SSL Encrypted
-              </span>
-              <span>•</span>
-              <span className="flex items-center gap-1">
-                <Zap size={13} className="text-zinc-400" />
-                Max Size: 25 MB
-              </span>
+                <button
+                  type="button"
+                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-sm flex items-center gap-2.5 shadow-lg shadow-red-600/25 group-hover:shadow-red-600/40 transition-all cursor-pointer"
+                >
+                  <FileUp size={18} />
+                  <span>Choose {tool.shortTitle.split(" ")[0]} File</span>
+                </button>
+
+                <div className="mt-8 flex items-center gap-4 text-[11px] text-zinc-500 font-medium">
+                  <span className="flex items-center gap-1">
+                    <Shield size={13} className="text-zinc-400" />
+                    256-Bit SSL Encrypted
+                  </span>
+                  <span>•</span>
+                  <span className="flex items-center gap-1">
+                    <Zap size={13} className="text-zinc-400" />
+                    Max Size: 25 MB
+                  </span>
+                </div>
+              </div>
             </div>
-          </div>
+          )
         )}
 
         {(conversionStatus === "ready" || conversionStatus === "error") && selectedFile && (
@@ -637,8 +716,15 @@ export default function ToolPage({ params }: ToolPageProps) {
       {/* Auth Modal */}
       <AuthModal
         isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
-        onSuccess={(email) => setUserEmail(email)}
+        onClose={() => {
+          setIsAuthOpen(false);
+          setAuthReason("general");
+        }}
+        reason={authReason}
+        onSuccess={(email) => {
+          setUserEmail(email);
+          setAuthReason("general");
+        }}
       />
     </div>
   );
