@@ -92,6 +92,7 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
   const [loading, setLoading] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [directDownloadLink, setDirectDownloadLink] = useState<{ url: string; name: string } | null>(null);
 
   // Active page text items and annotations
   const [textItems, setTextItems] = useState<TextOverlayItem[]>([]);
@@ -700,20 +701,44 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
       }
 
       const modifiedPdfBytes = await pdfDoc.save();
-      const blob = new Blob([new Uint8Array(modifiedPdfBytes)], { type: "application/pdf" });
+      // Ensure robust binary blob construction with explicit application/pdf MIME type
+      const blob = new Blob([new Uint8Array(modifiedPdfBytes) as unknown as BlobPart], { type: "application/pdf" });
       const downloadUrl = URL.createObjectURL(blob);
 
+      // Clean and sanitize filename: guarantee .pdf extension, remove spaces/parentheses that break mobile Android download managers
+      const rawName = pdfFile.name || "document.pdf";
+      const cleanBase = rawName
+        .replace(/\.pdf$/i, "")
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .replace(/_+/g, "_")
+        .trim() || "document";
+      const finalDownloadName = `${cleanBase}_edited.pdf`;
+
+      // 1. Programmatic download trigger
       const link = document.createElement("a");
       link.href = downloadUrl;
-      const originalName = pdfFile.name.replace(/\.pdf$/i, "");
-      link.download = `${originalName}_edited.pdf`;
+      link.download = finalDownloadName;
+      link.setAttribute("download", finalDownloadName);
+      link.style.display = "none";
       document.body.appendChild(link);
       link.click();
 
+      // Clean up link node from DOM without cutting off download stream
       setTimeout(() => {
-        document.body.removeChild(link);
-        URL.revokeObjectURL(downloadUrl);
-      }, 1000);
+        if (document.body.contains(link)) {
+          document.body.removeChild(link);
+        }
+      }, 300);
+
+      // Keep blob URL alive for 3 minutes so mobile background download workers complete transferring the full file
+      setTimeout(() => {
+        try {
+          URL.revokeObjectURL(downloadUrl);
+        } catch {}
+      }, 180000);
+
+      // Set direct download button in header for 100% fail-proof manual download on mobile
+      setDirectDownloadLink({ url: downloadUrl, name: finalDownloadName });
 
       // Increment edit count (tracked for user or guest)
       try {
@@ -728,11 +753,11 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
       }
 
       setSaveStatus("Downloaded Edited PDF!");
-      setTimeout(() => setSaveStatus(null), 3500);
+      setTimeout(() => setSaveStatus(null), 5000);
     } catch (err) {
       console.error("Error saving PDF:", err);
       setSaveStatus("Failed to save PDF");
-      setTimeout(() => setSaveStatus(null), 3500);
+      setTimeout(() => setSaveStatus(null), 5000);
     } finally {
       setIsSaving(false);
     }
@@ -813,7 +838,19 @@ export const VisualPdfEditor: React.FC<VisualPdfEditorProps> = ({ pdfFile, onClo
 
         {/* Right: Save & Download */}
         <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
-          {saveStatus && (
+          {directDownloadLink && (
+            <a
+              href={directDownloadLink.url}
+              download={directDownloadLink.name}
+              className="px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] sm:text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-600/30 transition-all cursor-pointer animate-fade-in"
+              title="Click here to download PDF directly"
+            >
+              <Download size={14} />
+              <span>Download PDF</span>
+            </a>
+          )}
+
+          {saveStatus && !directDownloadLink && (
             <span className="text-[11px] sm:text-xs text-emerald-400 font-medium px-2 py-0.5 rounded bg-emerald-950/50 border border-emerald-800/50 animate-fade-in hidden sm:inline-block">
               {saveStatus}
             </span>

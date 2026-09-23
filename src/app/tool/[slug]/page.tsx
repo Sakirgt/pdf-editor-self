@@ -240,14 +240,22 @@ export default function ToolPage({ params }: ToolPageProps) {
     const link = document.createElement("a");
     link.href = downloadUrl;
     link.download = fileName;
+    link.setAttribute("download", fileName);
     link.style.display = "none";
     document.body.appendChild(link);
     link.click();
 
     setTimeout(() => {
-      document.body.removeChild(link);
-      URL.revokeObjectURL(downloadUrl);
-    }, 1000);
+      if (document.body.contains(link)) {
+        document.body.removeChild(link);
+      }
+    }, 300);
+
+    setTimeout(() => {
+      try {
+        URL.revokeObjectURL(downloadUrl);
+      } catch {}
+    }, 180000);
   };
 
   // Convert Trigger & Backend API Call
@@ -571,14 +579,16 @@ export default function ToolPage({ params }: ToolPageProps) {
               </button>
 
               <div className="flex flex-col sm:flex-row items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleStartConversion}
-                  className="w-full py-3.5 px-6 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white font-bold text-sm border border-zinc-700 flex items-center justify-center gap-2 transition-all cursor-pointer"
-                >
-                  <Sparkles size={16} className="text-red-400" />
-                  <span>Convert to {tool.outputFormatName}</span>
-                </button>
+                {tool.slug !== "edit-pdf" && (
+                  <button
+                    type="button"
+                    onClick={handleStartConversion}
+                    className="w-full py-3.5 px-6 rounded-2xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white font-bold text-sm border border-zinc-700 flex items-center justify-center gap-2 transition-all cursor-pointer"
+                  >
+                    <Sparkles size={16} className="text-red-400" />
+                    <span>Convert to {tool.outputFormatName}</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
